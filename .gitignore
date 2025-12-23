@@ -37,9 +37,7 @@ ENV/
 .ipynb_checkpoints
 
 # Arquivos temporários do projeto BSP
-_temp_progress_*.png
-progresso_*.png
-resultado_bsp.png
+.png
 
 # Arquivos de teste (opcional - descomente se quiser)
 teste_*.png
