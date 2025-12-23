@@ -1,0 +1,55 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+env/
+ENV/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Arquivos temporários do projeto BSP
+_temp_progress_*.png
+progresso_*.png
+resultado_bsp.png
+
+# Arquivos de teste (opcional - descomente se quiser)
+teste_*.png
+debug_*.png
+
+# OS
+.DS_Store
+Thumbs.db
+*.log
+
+# Configs customizados (opcional - mantenha comentado para subir configs)
+# config_teste.ini
+# config_custom.ini
