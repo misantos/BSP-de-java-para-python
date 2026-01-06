@@ -5,9 +5,6 @@ Este módulo define a classe Point, que representa um ponto no plano cartesiano.
 É usada para armazenar as coordenadas dos vértices dos lotes quadrilaterais.
 """
 
-import math
-
-
 class Point:
     """Representa um ponto 2D com coordenadas x e y.
     
@@ -50,4 +47,5 @@ class Point:
     
     def distance_to(self, other: 'Point') -> float:
         """Calcula distância euclidiana até outro ponto."""
+        import math
         return math.sqrt((self.x - other.x) ** 2 + (self.y - other.y) ** 2)
