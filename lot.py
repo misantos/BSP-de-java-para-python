@@ -13,6 +13,153 @@ Usado no algoritmo BSP (Binary Space Partitioning) para subdivisão de terrenos.
 """
 
 from point import Point
+from typing import Set, Tuple, TYPE_CHECKING
+from collections import defaultdict
+
+if TYPE_CHECKING:
+    from typing import DefaultDict
+
+
+class SpatialIndex:
+    """
+    Índice espacial baseado em grade para acelerar consultas de proximidade.
+
+    Divide o espaço em células de grade e mantém um mapeamento de quais lotes
+    ocupam cada célula. Isso reduz a complexidade de O(n) para ~O(1) na média
+    para encontrar lotes próximos a um ponto.
+
+    Attributes:
+        cell_size (float): Tamanho de cada célula da grade em pixels
+        grid: Mapeamento de células para conjuntos de lotes
+        lot_cells: Mapeamento de lotes para conjuntos de células que ocupam
+
+    Examples:
+        >>> index = SpatialIndex(cell_size=100.0)
+        >>> index.add_lot(some_lot)
+        >>> nearby = index.get_nearby_lots(Point(500, 500))
+    """
+
+    def __init__(self, cell_size: float = 50.0):
+        """
+        Inicializa o índice espacial.
+
+        Args:
+            cell_size: Tamanho de cada célula da grade em pixels (padrão: 50.0)
+        """
+        self.cell_size = cell_size
+        self.grid: defaultdict[Tuple[int, int], Set['Lot']] = defaultdict(set)
+        self.lot_cells: defaultdict['Lot', Set[Tuple[int, int]]] = defaultdict(set)
+
+    def _get_cell(self, x: float, y: float) -> Tuple[int, int]:
+        """
+        Retorna a célula da grade para um ponto.
+
+        Args:
+            x: Coordenada x do ponto
+            y: Coordenada y do ponto
+
+        Returns:
+            Tupla (cell_x, cell_y) identificando a célula
+        """
+        return (int(x // self.cell_size), int(y // self.cell_size))
+
+    def _get_cells_for_lot(self, lot: 'Lot') -> Set[Tuple[int, int]]:
+        """
+        Retorna todas as células que um lote ocupa.
+
+        Calcula o bounding box do lote e determina todas as células
+        que o lote pode ocupar, incluindo uma margem de segurança.
+
+        Args:
+            lot: O lote para calcular células
+
+        Returns:
+            Conjunto de tuplas (cell_x, cell_y) que o lote ocupa
+        """
+        # Pega bounding box do lote
+        min_x = min(lot.top_left.x, lot.top_right.x, lot.bottom_left.x, lot.bottom_right.x)
+        max_x = max(lot.top_left.x, lot.top_right.x, lot.bottom_left.x, lot.bottom_right.x)
+        min_y = min(lot.top_left.y, lot.top_right.y, lot.bottom_left.y, lot.bottom_right.y)
+        max_y = max(lot.top_left.y, lot.top_right.y, lot.bottom_left.y, lot.bottom_right.y)
+
+        # Adiciona margem para garantir que pegamos células adjacentes
+        margin = self.cell_size
+        min_x -= margin
+        max_x += margin
+        min_y -= margin
+        max_y += margin
+
+        # Calcula células que o lote ocupa
+        cells = set()
+        cell_min = self._get_cell(min_x, min_y)
+        cell_max = self._get_cell(max_x, max_y)
+
+        for i in range(cell_min[0], cell_max[0] + 1):
+            for j in range(cell_min[1], cell_max[1] + 1):
+                cells.add((i, j))
+
+        return cells
+
+    def add_lot(self, lot: 'Lot') -> None:
+        """
+        Adiciona um lote ao índice espacial.
+
+        Args:
+            lot: Lote a ser adicionado
+        """
+        cells = self._get_cells_for_lot(lot)
+        for cell in cells:
+            self.grid[cell].add(lot)
+            self.lot_cells[lot].add(cell)
+
+    def remove_lot(self, lot: 'Lot') -> None:
+        """
+        Remove um lote do índice espacial.
+
+        Args:
+            lot: Lote a ser removido
+        """
+        if lot in self.lot_cells:
+            for cell in self.lot_cells[lot]:
+                self.grid[cell].discard(lot)
+            del self.lot_cells[lot]
+
+    def get_nearby_lots(self, point: Point) -> Set['Lot']:
+        """
+        Retorna lotes próximos a um ponto.
+
+        Verifica a célula do ponto e as 8 células adjacentes (3x3 grid)
+        para encontrar todos os lotes que podem estar próximos.
+
+        Args:
+            point: Ponto de referência
+
+        Returns:
+            Conjunto de lotes próximos ao ponto
+        """
+        cell = self._get_cell(point.x, point.y)
+        nearby = set()
+        # Verifica célula atual e células adjacentes (grid 3x3)
+        for dx in [-1, 0, 1]:
+            for dy in [-1, 0, 1]:
+                nearby.update(self.grid.get((cell[0] + dx, cell[1] + dy), set()))
+        return nearby
+
+    def clear(self) -> None:
+        """Limpa completamente o índice."""
+        self.grid.clear()
+        self.lot_cells.clear()
+
+    def rebuild(self, lots: list['Lot']) -> None:
+        """
+        Reconstrói o índice com uma nova lista de lotes.
+
+        Args:
+            lots: Lista de lotes para indexar
+        """
+        self.clear()
+        for lot in lots:
+            self.add_lot(lot)
 
 
 class Lot:
@@ -168,124 +315,100 @@ class Lot:
         # Margem de erro para precisão de ponto flutuante
         return abs(total_area_with_p - quad_area) < 1e-6
     
-    def has_an_exit_to_external_area(self) -> bool:
+    def has_an_exit_to_external_area(self, spatial_index: SpatialIndex = None) -> bool:
         """
-        Verifica se o lote tem pelo menos uma saída para área externa.
-        
+        Verifica se o lote tem pelo menos uma saída para área externa (OTIMIZADO).
+
         Um lote precisa ter acesso a áreas externas (ruas) para ser válido.
         Este método verifica se o lote está completamente cercado por outros lotes.
-        
-        Algoritmo:
+
+        Algoritmo OTIMIZADO:
         1. Para cada vértice do lote, testa 4 direções ao redor (8 pixels de distância)
-        2. Se algum ponto testado NÃO está dentro de outro lote, há uma saída
-        3. Se todos os pontos estão bloqueados, o lote não tem saída
-        
+        2. Usa spatial index (se fornecido) para verificar apenas lotes próximos
+        3. Se algum ponto testado NÃO está dentro de outro lote, há uma saída
+        4. Se todos os pontos estão bloqueados, o lote não tem saída
+
+        Args:
+            spatial_index: Índice espacial para acelerar buscas (opcional)
+                          Se None, usa LotStack.lots (comportamento original O(n))
+                          Se fornecido, usa busca otimizada O(k) onde k ≈ constante
+
         Returns:
             bool: True se há pelo menos uma saída livre, False se está completamente cercado
-        
+
         Note:
-            - Acessa LotStack.lots diretamente (variável de classe estática)
             - SPREAD = 8 pixels: distância para testar ao redor dos vértices
             - Testa 16 pontos no total (4 vértices × 4 direções)
-        
+            - Com spatial_index: O(k) onde k é número de lotes próximos (~5-10)
+            - Sem spatial_index: O(n) onde n é número total de lotes (fallback)
+
         Examples:
-            >>> # Um lote isolado sempre tem saída
+            >>> # Uso com spatial index (OTIMIZADO)
+            >>> index = SpatialIndex()
             >>> lote = Lot(0, 0, 100, 0, 100, 100, 0, 100)
+            >>> lote.has_an_exit_to_external_area(index)
+            True
+
+            >>> # Uso sem spatial index (compatibilidade)
             >>> lote.has_an_exit_to_external_area()
             True
         """
-        # Import aqui para evitar dependência circular
-        from lot_stack import LotStack
-        
         lot = self
         SPREAD = 8
-        
-        # Inicializa todas as direções como True (livres)
-        top_left_top_left = True
-        top_left_bottom_right = True
-        top_left_bottom_left = True
-        top_left_top_right = True
-        
-        top_right_top_left = True
-        top_right_bottom_right = True
-        top_right_bottom_left = True
-        top_right_top_right = True
-        
-        bottom_left_top_left = True
-        bottom_left_bottom_right = True
-        bottom_left_top_right = True
-        bottom_left_bottom_left = True
-        
-        bottom_right_top_left = True
-        bottom_right_top_right = True
-        bottom_right_bottom_left = True
-        bottom_right_bottom_right = True
-        
-        # Verifica se os vértices estão dentro de algum outro lote
-        for it_lot in LotStack.lots:
-            if it_lot == lot:
-                continue
-            
+
+        # Define os 16 pontos de teste (4 vértices × 4 direções)
+        test_points = [
             # topLeft
-            if it_lot.is_inside(Point(lot.top_left.x - SPREAD, lot.top_left.y - SPREAD)):
-                top_left_top_left = False
-            if it_lot.is_inside(Point(lot.top_left.x + SPREAD, lot.top_left.y + SPREAD)):
-                top_left_bottom_right = False
-            if it_lot.is_inside(Point(lot.top_left.x + SPREAD, lot.top_left.y - SPREAD)):
-                top_left_top_right = False
-            if it_lot.is_inside(Point(lot.top_left.x - SPREAD, lot.top_left.y + SPREAD)):
-                top_left_bottom_left = False
-            
+            Point(lot.top_left.x - SPREAD, lot.top_left.y - SPREAD),
+            Point(lot.top_left.x + SPREAD, lot.top_left.y + SPREAD),
+            Point(lot.top_left.x + SPREAD, lot.top_left.y - SPREAD),
+            Point(lot.top_left.x - SPREAD, lot.top_left.y + SPREAD),
             # topRight
-            if it_lot.is_inside(Point(lot.top_right.x - SPREAD, lot.top_right.y - SPREAD)):
-                top_right_top_left = False
-            if it_lot.is_inside(Point(lot.top_right.x + SPREAD, lot.top_right.y + SPREAD)):
-                top_right_bottom_right = False
-            if it_lot.is_inside(Point(lot.top_right.x + SPREAD, lot.top_right.y - SPREAD)):
-                top_right_top_right = False
-            if it_lot.is_inside(Point(lot.top_right.x - SPREAD, lot.top_right.y + SPREAD)):
-                top_right_bottom_left = False
-            
+            Point(lot.top_right.x - SPREAD, lot.top_right.y - SPREAD),
+            Point(lot.top_right.x + SPREAD, lot.top_right.y + SPREAD),
+            Point(lot.top_right.x + SPREAD, lot.top_right.y - SPREAD),
+            Point(lot.top_right.x - SPREAD, lot.top_right.y + SPREAD),
             # bottomLeft
-            if it_lot.is_inside(Point(lot.bottom_left.x - SPREAD, lot.bottom_left.y - SPREAD)):
-                bottom_left_top_left = False
-            if it_lot.is_inside(Point(lot.bottom_left.x + SPREAD, lot.bottom_left.y + SPREAD)):
-                bottom_left_bottom_right = False
-            if it_lot.is_inside(Point(lot.bottom_left.x + SPREAD, lot.bottom_left.y - SPREAD)):
-                bottom_left_top_right = False
-            if it_lot.is_inside(Point(lot.bottom_left.x - SPREAD, lot.bottom_left.y + SPREAD)):
-                bottom_left_bottom_left = False
-            
+            Point(lot.bottom_left.x - SPREAD, lot.bottom_left.y - SPREAD),
+            Point(lot.bottom_left.x + SPREAD, lot.bottom_left.y + SPREAD),
+            Point(lot.bottom_left.x + SPREAD, lot.bottom_left.y - SPREAD),
+            Point(lot.bottom_left.x - SPREAD, lot.bottom_left.y + SPREAD),
             # bottomRight
-            if it_lot.is_inside(Point(lot.bottom_right.x - SPREAD, lot.bottom_right.y - SPREAD)):
-                bottom_right_top_left = False
-            if it_lot.is_inside(Point(lot.bottom_right.x + SPREAD, lot.bottom_right.y + SPREAD)):
-                bottom_right_bottom_right = False
-            if it_lot.is_inside(Point(lot.bottom_right.x + SPREAD, lot.bottom_right.y - SPREAD)):
-                bottom_right_top_right = False
-            if it_lot.is_inside(Point(lot.bottom_right.x - SPREAD, lot.bottom_right.y + SPREAD)):
-                bottom_right_bottom_left = False
-        
-        # Se qualquer direção está livre, retorna True
-        return (top_left_top_left or
-                top_left_top_right or
-                top_left_bottom_left or
-                top_left_bottom_right or
-                
-                top_right_top_left or
-                top_right_top_right or
-                top_right_bottom_left or
-                top_right_bottom_right or
-                
-                bottom_right_top_left or
-                bottom_right_top_right or
-                bottom_right_bottom_left or
-                bottom_right_bottom_right or
-                
-                bottom_left_top_left or
-                bottom_left_top_right or
-                bottom_left_bottom_left or
-                bottom_left_bottom_right)
+            Point(lot.bottom_right.x - SPREAD, lot.bottom_right.y - SPREAD),
+            Point(lot.bottom_right.x + SPREAD, lot.bottom_right.y + SPREAD),
+            Point(lot.bottom_right.x + SPREAD, lot.bottom_right.y - SPREAD),
+            Point(lot.bottom_right.x - SPREAD, lot.bottom_right.y + SPREAD),
+        ]
+
+        # Verifica cada ponto de teste
+        for test_point in test_points:
+            is_blocked = False
+
+            # Obtém lotes para verificar
+            if spatial_index:
+                # ⚡ OTIMIZADO: Verifica apenas lotes próximos usando spatial index
+                # Reduz de O(n) para O(k) onde k ≈ 5-10 lotes próximos
+                lots_to_check = spatial_index.get_nearby_lots(test_point)
+            else:
+                # 🐌 FALLBACK: Verifica todos os lotes (comportamento original)
+                # O(n) - mais lento, mas mantém compatibilidade
+                from lot_stack import LotStack
+                lots_to_check = LotStack.lots
+
+            # Verifica se o ponto está dentro de algum lote próximo
+            for it_lot in lots_to_check:
+                if it_lot == lot:
+                    continue
+                if it_lot.is_inside(test_point):
+                    is_blocked = True
+                    break
+
+            # Se encontrou um ponto livre, o lote tem saída
+            if not is_blocked:
+                return True
+
+        # Todos os pontos estão bloqueados
+        return False
     
     def __repr__(self) -> str:
         """Retorna representação string do lote para debug.
