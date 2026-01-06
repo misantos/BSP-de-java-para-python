@@ -8,6 +8,8 @@ import argparse
 from PIL import Image, ImageDraw
 import sys
 import time
+import tempfile
+import os
 from lot import Lot
 from lot_stack import LotStack
 from point import Point
@@ -83,11 +85,19 @@ def show_and_save_lots(lots: list[Lot], img: Image.Image,
             plt.close()
         else:
             # Usa visualizador padrão do sistema
-            # Salva temporariamente para evitar problemas de memória
-            temp_filename = f"_temp_progress_{len(lots)}.png"
-            img_with_lots.save(temp_filename)
-            img_with_lots.show(title=f"BSP - {len(lots)} lotes")
-            time.sleep(0.3)  # Pequeno delay
+            # Usa arquivo temporário com limpeza automática
+            with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
+                temp_filename = tmp.name
+            try:
+                img_with_lots.save(temp_filename)
+                img_with_lots.show(title=f"BSP - {len(lots)} lotes")
+                time.sleep(0.3)  # Pequeno delay
+            finally:
+                # Limpa o arquivo temporário após uso
+                try:
+                    os.unlink(temp_filename)
+                except:
+                    pass  # Ignora erros de limpeza
 
 
 def create_initial_lot_from_config(config: BSPConfig) -> Lot:
