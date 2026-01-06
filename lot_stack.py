@@ -162,38 +162,83 @@ class LotStack:
         
         # ===== Loop Principal =====
         # Continua subdividindo até atingir MIN_LOTS
-        
+
+        # 🐛 FIX: Previne loops infinitos com limite de tentativas
+        max_attempts = LotStack.MIN_LOTS * 20  # Máximo de iterações (mais generoso)
+        attempts = 0
+        last_lot_count = len(LotStack.lots)
+        stagnation_counter = 0  # Contador de iterações sem progresso
+        max_stagnation = 15  # Número de iterações sem progresso antes de desistir (mais tolerante)
+
         while len(LotStack.lots) < LotStack.MIN_LOTS:
             # Mostra progresso no console
             print(f"Total de lotes atual: {len(LotStack.lots)}")
+
+            # 🐛 FIX: Verifica limite de tentativas
+            attempts += 1
+            if attempts >= max_attempts:
+                print(f"⚠️  AVISO: Limite de tentativas atingido ({max_attempts} iterações)")
+                print(f"    Conseguimos criar {len(LotStack.lots)} lotes de {LotStack.MIN_LOTS} desejados.")
+                print(f"    Sugestão: Reduza MIN_LOTS ou ajuste os parâmetros de tamanho/divisão.")
+                break
+
+            # 🐛 FIX: Detecta estagnação (sem progresso)
+            if len(LotStack.lots) == last_lot_count:
+                stagnation_counter += 1
+                if stagnation_counter >= max_stagnation:
+                    print(f"⚠️  AVISO: Subdivisão estagnada (sem progresso em {max_stagnation} iterações)")
+                    print(f"    Total atual: {len(LotStack.lots)} lotes de {LotStack.MIN_LOTS} desejados.")
+                    print(f"    Os lotes restantes não podem ser subdivididos (muito pequenos ou sem saída).")
+                    break
+            else:
+                stagnation_counter = 0  # Reset contador se houve progresso
+                last_lot_count = len(LotStack.lots)
             
             # Encontra a prioridade mínima (lotes com menor prioridade = maiores)
             # Integer.MAX_VALUE do Java = float('inf') do Python
             min_priority = float('inf')
-            
-            # Desenha progresso se callback disponível
+
+            # 🐛 FIX: Desenha progresso apenas periodicamente (não em cada iteração)
+            # Mostra a cada 5 lotes novos para evitar spam de janelas
             if LotStack.draw_callback and LotStack.img:
-                LotStack.draw_callback(list(LotStack.lots), LotStack.img.copy())
+                if len(LotStack.lots) % 5 == 0 or len(LotStack.lots) == 1:
+                    LotStack.draw_callback(list(LotStack.lots), LotStack.img.copy())
             
             # Calcula a menor prioridade entre todos os lotes
             for lot in LotStack.lots:
                 if lot.priority < min_priority:
                     min_priority = lot.priority
-            
+
+            # 🐛 FIX: Calcula área média para identificar lotes desproporcionalmente grandes
+            if len(LotStack.lots) > 0:
+                areas = [lot.get_width() * lot.get_height() for lot in LotStack.lots]
+                avg_area = sum(areas) / len(areas)
+                # Lotes 3x maiores que a média devem ser subdivididos prioritariamente
+                large_area_threshold = avg_area * 3.0
+            else:
+                large_area_threshold = float('inf')
+
             # ===== Seleciona Lotes para Subdividir =====
             # Subdivide SE:
             # - Prioridade == mínima (lotes maiores), OU
-            # - Tamanho >= máximo (lotes muito grandes)
-            
+            # - Tamanho >= máximo (lotes muito grandes), OU
+            # - 🐛 FIX: Área > 3x a média (lotes desproporcionalmente grandes)
+
             # list() para evitar modificar durante iteração
             for lot in list(LotStack.lots):
-                # Skip se: prioridade > mínima E tamanho < máximo
-                # (lotes pequenos com prioridade alta não são subdivididos)
-                if (lot.priority > min_priority and
-                    lot.get_width() < LotStack.MAX_WIDTH_LOT and 
-                    lot.get_height() < LotStack.MAX_HEIGHT_LOT):
+                lot_area = lot.get_width() * lot.get_height()
+
+                # 🐛 FIX: Critérios de subdivisão mais agressivos
+                should_subdivide = (
+                    lot.priority <= min_priority or  # Menor prioridade (original)
+                    lot.get_width() >= LotStack.MAX_WIDTH_LOT or  # Largura máxima (original)
+                    lot.get_height() >= LotStack.MAX_HEIGHT_LOT or  # Altura máxima (original)
+                    lot_area > large_area_threshold  # 🐛 NOVO: Área desproporcional
+                )
+
+                if not should_subdivide:
                     continue
-                
+
                 # Tenta subdividir este lote
                 LotStack.partite_lot(lot)
     
@@ -270,10 +315,20 @@ class LotStack:
             # Quantas subdivisões fazer (aleatório entre MIN e MAX)
             # Math.ceil: arredonda para cima (garante pelo menos MIN_SPLIT)
             # nextInt(n): retorna 0 até n-1
-            anchor_points = int(math.ceil(
-                LotStack.MIN_SPLIT_X + 
-                LotStack.random_gen.nextInt(int(LotStack.MAX_SPLIT_X - LotStack.MIN_SPLIT_X))
-            ))
+            # 🐛 FIX: Previne divisão por zero quando MAX == MIN
+            split_range = int(LotStack.MAX_SPLIT_X - LotStack.MIN_SPLIT_X)
+            if split_range > 0:
+                anchor_points = int(math.ceil(
+                    LotStack.MIN_SPLIT_X +
+                    LotStack.random_gen.nextInt(split_range)
+                ))
+            else:
+                # Se MAX == MIN, usa MIN diretamente
+                anchor_points = LotStack.MIN_SPLIT_X
+
+            # 🐛 FIX: Garante pelo menos 1 subdivisão para evitar lotes vazios
+            if anchor_points < 1:
+                return  # Cancela subdivisão se não há divisões suficientes
             
             # Cria os novos lotes
             # k varia de 1 até anchor_points (inclusive)
@@ -329,12 +384,22 @@ class LotStack:
             
             dx_bottom = lot_to_partition.bottom_right.x - lot_to_partition.bottom_left.x
             dy_bottom = lot_to_partition.bottom_right.y - lot_to_partition.bottom_left.y
-            
+
             # Quantas subdivisões fazer
-            anchor_points = int(math.ceil(
-                LotStack.MIN_SPLIT_Y + 
-                LotStack.random_gen.nextInt(int(LotStack.MAX_SPLIT_Y - LotStack.MIN_SPLIT_Y))
-            ))
+            # 🐛 FIX: Previne divisão por zero quando MAX == MIN
+            split_range = int(LotStack.MAX_SPLIT_Y - LotStack.MIN_SPLIT_Y)
+            if split_range > 0:
+                anchor_points = int(math.ceil(
+                    LotStack.MIN_SPLIT_Y +
+                    LotStack.random_gen.nextInt(split_range)
+                ))
+            else:
+                # Se MAX == MIN, usa MIN diretamente
+                anchor_points = LotStack.MIN_SPLIT_Y
+
+            # 🐛 FIX: Garante pelo menos 1 subdivisão para evitar lotes vazios
+            if anchor_points < 1:
+                return  # Cancela subdivisão se não há divisões suficientes
             
             # Cria os novos lotes
             for k in range(1, anchor_points + 1):
