@@ -23,7 +23,7 @@ Autor: Migração Python por Claude (Original Java: Erick Oliveira Rodrigues)
 from collections import deque
 from typing import Deque
 import math
-from lot import Lot
+from lot import Lot, SpatialIndex
 from point import Point
 from java_random import JavaRandom
 
@@ -43,6 +43,7 @@ class LotStack:
         MIN/MAX_HEIGHT/WIDTH_LOT: Limites de tamanho dos lotes
         draw_callback: Função para desenhar progresso (opcional)
         img: Imagem base para desenho (opcional)
+        spatial_index: Índice espacial para otimização O(n²) → O(k)
     
     Fluxo de Execução:
         1. __init__: Configura variáveis e inicia subdivisão
@@ -79,6 +80,10 @@ class LotStack:
     # Callback para visualização de progresso (opcional)
     draw_callback = None  # Função chamada a cada iteração para desenhar
     img = None            # Imagem base para desenho
+
+    # ⚡ OTIMIZAÇÃO: Índice espacial para acelerar has_an_exit_to_external_area()
+    # Reduz complexidade de O(n) para O(k) onde k ≈ 5-10 lotes próximos
+    spatial_index: SpatialIndex = None
     
     def __init__(self, initial_lot: Lot, config: dict):
         """
@@ -142,9 +147,16 @@ class LotStack:
         # Visualização (opcional)
         LotStack.draw_callback = config.get('draw_callback')
         LotStack.img = config.get('img')
-        
+
+        # ⚡ OTIMIZAÇÃO: Inicializa índice espacial
+        # Cell size otimizado: 100px funciona bem para lotes típicos de 125-1000px
+        LotStack.spatial_index = SpatialIndex(cell_size=100.0)
+
         # ===== Inicia Subdivisão =====
-        
+
+        # Adiciona lote inicial ao índice espacial
+        LotStack.spatial_index.add_lot(initial_lot)
+
         # Primeira subdivisão (lote inicial → primeiros lotes)
         LotStack.partite_lot(initial_lot)
         
@@ -363,25 +375,36 @@ class LotStack:
                 # Lote muito pequeno → cancela subdivisão
                 return
             
-            # ===== Validação 2: Acesso a Área Externa =====
+            # ===== Validação 2: Acesso a Área Externa (COM SPATIAL INDEX) =====
             # Lote deve ter pelo menos uma saída livre (não cercado)
             # Garante que lote tem acesso a ruas/áreas externas
-            if not lot.has_an_exit_to_external_area():
+            # ⚡ OTIMIZADO: Passa spatial_index para busca O(k) ao invés de O(n)
+            if not lot.has_an_exit_to_external_area(LotStack.spatial_index):
                 # Lote sem saída → cancela subdivisão
                 return
         
         # ===== Subdivisão Aceita! =====
         # Todos os lotes passaram nas validações
-        
+
+        # ⚡ OTIMIZAÇÃO: Atualiza spatial index
+        # Remove o lote pai do índice espacial
+        if LotStack.spatial_index:
+            LotStack.spatial_index.remove_lot(lot_to_partition)
+
         # Remove o lote pai da lista
         try:
             LotStack.lots.remove(lot_to_partition)
         except ValueError:
             # Lote pode já ter sido removido (não é erro)
             pass
-        
-        # Adiciona todos os lotes filhos
+
+        # Adiciona todos os lotes filhos à lista
         LotStack.lots.extend(potential_lots)
+
+        # ⚡ OTIMIZAÇÃO: Adiciona novos lotes ao spatial index
+        if LotStack.spatial_index:
+            for lot in potential_lots:
+                LotStack.spatial_index.add_lot(lot)
     
     def get_lots(self) -> list[Lot]:
         """
