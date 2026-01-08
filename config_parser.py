@@ -1,87 +1,133 @@
 """
-Config Parser - Lê arquivos de configuração .ini para o sistema BSP.
+config_parser.py - Parser de configuração do BSP
+
+Lê arquivos .ini e retorna dicionário de configuração.
+CORRIGIDO: parser.optionxform = str para preservar maiúsculas
+
+Autor: Refatoração Python
+Data: 2026-01-07
 """
 
 import configparser
-from typing import Dict, Any
-import io
+from typing import Dict, Any, Tuple, List
+import os
 
 
 class BSPConfig:
-    """Gerencia a leitura e validação de configurações do BSP."""
+    """
+    Gerencia configurações do algoritmo BSP.
     
-    def __init__(self, config_file: str = "config_bsp.ini"):
+    Lê arquivo .ini e fornece acesso aos parâmetros.
+    """
+    
+    # Valores padrão
+    DEFAULTS = {
+        'IMAGE_WIDTH': 1300,
+        'IMAGE_HEIGHT': 1300,
+        'SEED': None,  # Agora é opcional!
+        
+        # Quadrilátero inicial
+        'QUAD_TOP_LEFT_X': 100,
+        'QUAD_TOP_LEFT_Y': 200,
+        'QUAD_TOP_RIGHT_X': 600,
+        'QUAD_TOP_RIGHT_Y': 200,
+        'QUAD_BOTTOM_RIGHT_X': 650,
+        'QUAD_BOTTOM_RIGHT_Y': 1200,
+        'QUAD_BOTTOM_LEFT_X': 150,
+        'QUAD_BOTTOM_LEFT_Y': 1100,
+        
+        # Limites de lotes
+        'MIN_AMOUNT_OF_LOTS': 45,
+        'MIN_LOT_HEIGHT': 155,
+        'MIN_LOT_WIDTH': 125,
+        'MAX_LOT_HEIGHT': 1000,
+        'MAX_LOT_WIDTH': 1000,
+        
+        # Limites de subdivisões
+        'MIN_SPLITS_IN_X_AXIS': 1,
+        'MAX_SPLITS_IN_X_AXIS': 5,
+        'MIN_SPLITS_IN_Y_AXIS': 1,
+        'MAX_SPLITS_IN_Y_AXIS': 5,
+    }
+    
+    def __init__(self, config_file: str = 'config_bsp.ini'):
         """
-        Inicializa o leitor de configurações.
+        Inicializa o parser de configuração.
         
         Args:
             config_file: Caminho para o arquivo .ini
         """
         self.config_file = config_file
-        self.config = self._read_config()
+        self._config = self._read_config()
     
     def _read_config(self) -> Dict[str, Any]:
         """
-        Lê o arquivo de configuração .ini.
-        Aceita arquivos com ou sem seção [DEFAULT].
+        Lê o arquivo de configuração.
         
         Returns:
-            Dicionário com todas as configurações
+            Dicionário com valores de configuração
         """
         parser = configparser.ConfigParser()
         
-        # Lê o arquivo e adiciona seção [DEFAULT] se não tiver
+        # ⚠️ IMPORTANTE: Preserva maiúsculas/minúsculas nas chaves
+        parser.optionxform = str
+        
+        # Verifica se arquivo existe
+        if not os.path.exists(self.config_file):
+            print(f"⚠️  Arquivo {self.config_file} não encontrado. Usando valores padrão.")
+            return dict(self.DEFAULTS)
+        
+        # Lê o arquivo
         try:
             with open(self.config_file, 'r', encoding='utf-8') as f:
                 content = f.read()
             
-            # Se não começa com [, adiciona seção DEFAULT
+            # Adiciona seção [DEFAULT] se não existir
             if not content.strip().startswith('['):
                 content = '[DEFAULT]\n' + content
             
             parser.read_string(content)
-        except FileNotFoundError:
-            raise FileNotFoundError(f"Arquivo não encontrado: {self.config_file}")
+        except Exception as e:
+            print(f"❌ Erro ao ler {self.config_file}: {e}")
+            return dict(self.DEFAULTS)
         
-        # Pega a seção (DEFAULT ou primeira disponível)
-        if parser.has_section('DEFAULT') or parser.defaults():
-            section = parser.defaults()
+        # Obtém a seção (DEFAULT ou primeira disponível)
+        if parser.sections():
+            section = parser[parser.sections()[0]]
         else:
-            section = parser[parser.sections()[0]] if parser.sections() else {}
+            section = parser['DEFAULT']
         
-        config = {
-            # Dimensões da imagem
-            'IMAGE_WIDTH': int(section.get('IMAGE_WIDTH', 1300)),
-            'IMAGE_HEIGHT': int(section.get('IMAGE_HEIGHT', 1300)),
-            
-            # Splits (subdivisões)
-            'MIN_SPLITS_IN_X_AXIS': int(section.get('MIN_SPLITS_IN_X_AXIS', 1)),
-            'MIN_SPLITS_IN_Y_AXIS': int(section.get('MIN_SPLITS_IN_Y_AXIS', 1)),
-            'MAX_SPLITS_IN_X_AXIS': int(section.get('MAX_SPLITS_IN_X_AXIS', 5)),
-            'MAX_SPLITS_IN_Y_AXIS': int(section.get('MAX_SPLITS_IN_Y_AXIS', 5)),
-            
-            # Quantidade de lotes
-            'MIN_AMOUNT_OF_LOTS': int(section.get('MIN_AMOUNT_OF_LOTS', 45)),
-            
-            # Dimensões dos lotes
-            'MIN_LOT_WIDTH': int(section.get('MIN_LOT_WIDTH', 125)),
-            'MIN_LOT_HEIGHT': int(section.get('MIN_LOT_HEIGHT', 155)),
-            'MAX_LOT_WIDTH': int(section.get('MAX_LOT_WIDTH', 1000)),
-            'MAX_LOT_HEIGHT': int(section.get('MAX_LOT_HEIGHT', 1000)),
-            
-            # Posições do quadrilátero inicial
-            'QUAD_TOP_LEFT_X': float(section.get('QUAD_TOP_LEFT_X', 100)),
-            'QUAD_TOP_LEFT_Y': float(section.get('QUAD_TOP_LEFT_Y', 200)),
-            'QUAD_TOP_RIGHT_X': float(section.get('QUAD_TOP_RIGHT_X', 600)),
-            'QUAD_TOP_RIGHT_Y': float(section.get('QUAD_TOP_RIGHT_Y', 200)),
-            'QUAD_BOTTOM_RIGHT_X': float(section.get('QUAD_BOTTOM_RIGHT_X', 650)),
-            'QUAD_BOTTOM_RIGHT_Y': float(section.get('QUAD_BOTTOM_RIGHT_Y', 1200)),
-            'QUAD_BOTTOM_LEFT_X': float(section.get('QUAD_BOTTOM_LEFT_X', 150)),
-            'QUAD_BOTTOM_LEFT_Y': float(section.get('QUAD_BOTTOM_LEFT_Y', 1100)),
-            
-            # Seed para aleatoriedade
-            'SEED': int(section.get('SEED', 333)),
-        }
+        # Monta dicionário de configuração
+        config = {}
+        
+        for key, default_value in self.DEFAULTS.items():
+            if key in section:
+                raw_value = section[key]
+                
+                # Converte para o tipo correto
+                if default_value is None:
+                    # SEED é opcional - None ou int
+                    if raw_value.lower() in ('none', 'null', ''):
+                        config[key] = None
+                    else:
+                        try:
+                            config[key] = int(raw_value)
+                        except ValueError:
+                            config[key] = None
+                elif isinstance(default_value, int):
+                    try:
+                        config[key] = int(raw_value)
+                    except ValueError:
+                        config[key] = default_value
+                elif isinstance(default_value, float):
+                    try:
+                        config[key] = float(raw_value)
+                    except ValueError:
+                        config[key] = default_value
+                else:
+                    config[key] = raw_value
+            else:
+                config[key] = default_value
         
         return config
     
@@ -91,12 +137,12 @@ class BSPConfig:
         
         Args:
             key: Chave da configuração
-            default: Valor padrão se não encontrado
+            default: Valor padrão se não existir
             
         Returns:
             Valor da configuração
         """
-        return self.config.get(key, default)
+        return self._config.get(key, default)
     
     def get_all(self) -> Dict[str, Any]:
         """
@@ -105,146 +151,121 @@ class BSPConfig:
         Returns:
             Dicionário com todas as configurações
         """
-        return self.config.copy()
+        return dict(self._config)
     
-    def print_config(self):
-        """Imprime todas as configurações de forma organizada."""
-        print("\n" + "="*60)
-        print("CONFIGURAÇÕES BSP")
-        print("="*60)
-        
-        print("\n📐 Dimensões da Imagem:")
-        print(f"  Largura: {self.config['IMAGE_WIDTH']}px")
-        print(f"  Altura: {self.config['IMAGE_HEIGHT']}px")
-        
-        print("\n🔀 Subdivisões (Splits):")
-        print(f"  Eixo X: {self.config['MIN_SPLITS_IN_X_AXIS']} a {self.config['MAX_SPLITS_IN_X_AXIS']}")
-        print(f"  Eixo Y: {self.config['MIN_SPLITS_IN_Y_AXIS']} a {self.config['MAX_SPLITS_IN_Y_AXIS']}")
-        
-        print("\n📦 Lotes:")
-        print(f"  Quantidade mínima: {self.config['MIN_AMOUNT_OF_LOTS']}")
-        print(f"  Largura: {self.config['MIN_LOT_WIDTH']}px a {self.config['MAX_LOT_WIDTH']}px")
-        print(f"  Altura: {self.config['MIN_LOT_HEIGHT']}px a {self.config['MAX_LOT_HEIGHT']}px")
-        
-        print("\n🔷 Quadrilátero Inicial:")
-        print(f"  Superior Esquerdo: ({self.config['QUAD_TOP_LEFT_X']}, {self.config['QUAD_TOP_LEFT_Y']})")
-        print(f"  Superior Direito: ({self.config['QUAD_TOP_RIGHT_X']}, {self.config['QUAD_TOP_RIGHT_Y']})")
-        print(f"  Inferior Direito: ({self.config['QUAD_BOTTOM_RIGHT_X']}, {self.config['QUAD_BOTTOM_RIGHT_Y']})")
-        print(f"  Inferior Esquerdo: ({self.config['QUAD_BOTTOM_LEFT_X']}, {self.config['QUAD_BOTTOM_LEFT_Y']})")
-        
-        print(f"\n🎲 Seed: {self.config['SEED']}")
-        print("="*60 + "\n")
-    
-    def validate(self) -> tuple[bool, list[str]]:
+    def validate(self) -> Tuple[bool, List[str]]:
         """
         Valida as configurações.
         
         Returns:
-            Tupla (válido, lista de erros)
+            (is_valid, list_of_errors)
         """
         errors = []
         
         # Valida dimensões da imagem
-        if self.config['IMAGE_WIDTH'] <= 0 or self.config['IMAGE_HEIGHT'] <= 0:
-            errors.append("Dimensões da imagem devem ser positivas")
+        if self._config['IMAGE_WIDTH'] <= 0:
+            errors.append("IMAGE_WIDTH deve ser > 0")
+        if self._config['IMAGE_HEIGHT'] <= 0:
+            errors.append("IMAGE_HEIGHT deve ser > 0")
         
-        # Valida splits
-        if self.config['MIN_SPLITS_IN_X_AXIS'] > self.config['MAX_SPLITS_IN_X_AXIS']:
-            errors.append("MIN_SPLITS_IN_X_AXIS deve ser <= MAX_SPLITS_IN_X_AXIS")
-        if self.config['MIN_SPLITS_IN_Y_AXIS'] > self.config['MAX_SPLITS_IN_Y_AXIS']:
-            errors.append("MIN_SPLITS_IN_Y_AXIS deve ser <= MAX_SPLITS_IN_Y_AXIS")
+        # Valida limites de lotes
+        if self._config['MIN_LOT_WIDTH'] <= 0:
+            errors.append("MIN_LOT_WIDTH deve ser > 0")
+        if self._config['MIN_LOT_HEIGHT'] <= 0:
+            errors.append("MIN_LOT_HEIGHT deve ser > 0")
+        if self._config['MIN_LOT_WIDTH'] > self._config['MAX_LOT_WIDTH']:
+            errors.append("MIN_LOT_WIDTH não pode ser maior que MAX_LOT_WIDTH")
+        if self._config['MIN_LOT_HEIGHT'] > self._config['MAX_LOT_HEIGHT']:
+            errors.append("MIN_LOT_HEIGHT não pode ser maior que MAX_LOT_HEIGHT")
         
-        # Valida dimensões dos lotes
-        if self.config['MIN_LOT_WIDTH'] > self.config['MAX_LOT_WIDTH']:
-            errors.append("MIN_LOT_WIDTH deve ser <= MAX_LOT_WIDTH")
-        if self.config['MIN_LOT_HEIGHT'] > self.config['MAX_LOT_HEIGHT']:
-            errors.append("MIN_LOT_HEIGHT deve ser <= MAX_LOT_HEIGHT")
-        
-        # Valida quadrilátero dentro da imagem
-        coords = [
-            (self.config['QUAD_TOP_LEFT_X'], self.config['QUAD_TOP_LEFT_Y']),
-            (self.config['QUAD_TOP_RIGHT_X'], self.config['QUAD_TOP_RIGHT_Y']),
-            (self.config['QUAD_BOTTOM_RIGHT_X'], self.config['QUAD_BOTTOM_RIGHT_Y']),
-            (self.config['QUAD_BOTTOM_LEFT_X'], self.config['QUAD_BOTTOM_LEFT_Y']),
-        ]
-        
-        for i, (x, y) in enumerate(coords):
-            if x < 0 or x > self.config['IMAGE_WIDTH']:
-                errors.append(f"Vértice {i+1}: X={x} está fora da imagem (0-{self.config['IMAGE_WIDTH']})")
-            if y < 0 or y > self.config['IMAGE_HEIGHT']:
-                errors.append(f"Vértice {i+1}: Y={y} está fora da imagem (0-{self.config['IMAGE_HEIGHT']})")
+        # Valida limites de subdivisões
+        if self._config['MIN_SPLITS_IN_X_AXIS'] < 1:
+            errors.append("MIN_SPLITS_IN_X_AXIS deve ser >= 1")
+        if self._config['MIN_SPLITS_IN_Y_AXIS'] < 1:
+            errors.append("MIN_SPLITS_IN_Y_AXIS deve ser >= 1")
+        if self._config['MIN_SPLITS_IN_X_AXIS'] > self._config['MAX_SPLITS_IN_X_AXIS']:
+            errors.append("MIN_SPLITS_IN_X_AXIS não pode ser maior que MAX_SPLITS_IN_X_AXIS")
+        if self._config['MIN_SPLITS_IN_Y_AXIS'] > self._config['MAX_SPLITS_IN_Y_AXIS']:
+            errors.append("MIN_SPLITS_IN_Y_AXIS não pode ser maior que MAX_SPLITS_IN_Y_AXIS")
         
         return (len(errors) == 0, errors)
-
-
-def create_default_config(filename: str = "config_bsp.ini"):
-    """
-    Cria um arquivo de configuração padrão.
     
-    Args:
-        filename: Nome do arquivo a criar
-    """
-    default_content = """;========================================
-; Configuração BSP - Binary Space Partitioning
-; Subdivisão automática de lotes urbanos
-;========================================
-
-;tamanho geral da imagem gerada (lembrando que as posições do quadrilatero precisam estar dentro desse tamanho)
-IMAGE_WIDTH=1300
-IMAGE_HEIGHT=1300
-;quantidade minima de splits pelo bsp em cada "espaço quadrilatero"
-MIN_SPLITS_IN_X_AXIS=1
-MIN_SPLITS_IN_Y_AXIS=1
-;quantidade maxima de splits, mesma logica acima
-MAX_SPLITS_IN_X_AXIS=5
-MAX_SPLITS_IN_Y_AXIS=5
-;quantidade minima de lotes/separações (não necessariamente vai conseguir chegar lá - depende dos outros parametros tbm)
-MIN_AMOUNT_OF_LOTS=45
-;dimensões minimas pra cada lote
-MIN_LOT_WIDTH=125
-MIN_LOT_HEIGHT=155
-;dimensões máximas pra cada lote
-MAX_LOT_WIDTH=1000
-MAX_LOT_HEIGHT=1000
-;posicoes do retangulo inicial abaixo:
-QUAD_TOP_LEFT_X=100
-QUAD_TOP_LEFT_Y=200
-QUAD_TOP_RIGHT_X=600
-QUAD_TOP_RIGHT_Y=200
-QUAD_BOTTOM_RIGHT_X=650
-QUAD_BOTTOM_RIGHT_Y=1200
-QUAD_BOTTOM_LEFT_X=150
-QUAD_BOTTOM_LEFT_Y=1100
-;mudar a seed para de repente gerar resultados diferentes a cada rodagem
-SEED=333
-"""
+    def print_config(self) -> None:
+        """Imprime as configurações de forma formatada."""
+        print("\n" + "=" * 60)
+        print("📋 CONFIGURAÇÕES DO BSP")
+        print("=" * 60)
+        
+        # SEED no topo (destaque)
+        seed_value = self._config.get('SEED')
+        if seed_value is not None:
+            print(f"\n🎲 SEED: {seed_value}")
+        else:
+            print(f"\n🎲 SEED: Aleatória (não definida)")
+        
+        # Imagem
+        print(f"\n📐 Imagem:")
+        print(f"   Largura: {self._config['IMAGE_WIDTH']} px")
+        print(f"   Altura:  {self._config['IMAGE_HEIGHT']} px")
+        
+        # Quadrilátero inicial
+        print(f"\n📍 Quadrilátero inicial:")
+        print(f"   Top Left:     ({self._config['QUAD_TOP_LEFT_X']}, {self._config['QUAD_TOP_LEFT_Y']})")
+        print(f"   Top Right:    ({self._config['QUAD_TOP_RIGHT_X']}, {self._config['QUAD_TOP_RIGHT_Y']})")
+        print(f"   Bottom Right: ({self._config['QUAD_BOTTOM_RIGHT_X']}, {self._config['QUAD_BOTTOM_RIGHT_Y']})")
+        print(f"   Bottom Left:  ({self._config['QUAD_BOTTOM_LEFT_X']}, {self._config['QUAD_BOTTOM_LEFT_Y']})")
+        
+        # Limites de lotes
+        print(f"\n📦 Limites de lotes:")
+        print(f"   Mínimo de lotes: {self._config['MIN_AMOUNT_OF_LOTS']}")
+        print(f"   Largura:  {self._config['MIN_LOT_WIDTH']} - {self._config['MAX_LOT_WIDTH']} px")
+        print(f"   Altura:   {self._config['MIN_LOT_HEIGHT']} - {self._config['MAX_LOT_HEIGHT']} px")
+        
+        # Limites de subdivisões
+        print(f"\n✂️  Limites de subdivisões:")
+        print(f"   Eixo X: {self._config['MIN_SPLITS_IN_X_AXIS']} - {self._config['MAX_SPLITS_IN_X_AXIS']}")
+        print(f"   Eixo Y: {self._config['MIN_SPLITS_IN_Y_AXIS']} - {self._config['MAX_SPLITS_IN_Y_AXIS']}")
+        
+        print("\n" + "=" * 60)
     
-    with open(filename, 'w', encoding='utf-8') as f:
-        f.write(default_content)
-    
-    print(f"✅ Arquivo de configuração padrão criado: {filename}")
+    def to_lot_stack_config(self) -> Dict[str, Any]:
+        """
+        Converte para o formato esperado pelo LotStack.
+        
+        Returns:
+            Dicionário no formato do LotStack
+        """
+        return {
+            'MIN_LOTS': self._config['MIN_AMOUNT_OF_LOTS'],
+            'MIN_HEIGHT_LOT': self._config['MIN_LOT_HEIGHT'],
+            'MIN_WIDTH_LOT': self._config['MIN_LOT_WIDTH'],
+            'MAX_HEIGHT_LOT': self._config['MAX_LOT_HEIGHT'],
+            'MAX_WIDTH_LOT': self._config['MAX_LOT_WIDTH'],
+            'MIN_SPLIT_X': self._config['MIN_SPLITS_IN_X_AXIS'],
+            'MAX_SPLIT_X': self._config['MAX_SPLITS_IN_X_AXIS'],
+            'MIN_SPLIT_Y': self._config['MIN_SPLITS_IN_Y_AXIS'],
+            'MAX_SPLIT_Y': self._config['MAX_SPLITS_IN_Y_AXIS'],
+            'SEED': self._config['SEED'],
+        }
 
 
+# Teste do módulo
 if __name__ == "__main__":
-    # Testa o parser
-    import sys
+    print("🧪 Testando config_parser.py")
     
-    if len(sys.argv) > 1 and sys.argv[1] == "--create":
-        create_default_config()
-    else:
-        try:
-            config = BSPConfig()
-            config.print_config()
-            
-            valid, errors = config.validate()
-            if valid:
-                print("✅ Configuração válida!")
-            else:
-                print("❌ Erros encontrados:")
-                for error in errors:
-                    print(f"  - {error}")
-        except FileNotFoundError:
-            print("❌ Arquivo config_bsp.ini não encontrado!")
-            print("Execute: python config_parser.py --create")
-        except Exception as e:
-            print(f"❌ Erro: {e}")
+    # Testa com valores padrão (sem arquivo)
+    config = BSPConfig('arquivo_inexistente.ini')
+    config.print_config()
+    
+    # Valida
+    is_valid, errors = config.validate()
+    print(f"\n✅ Configuração válida: {is_valid}")
+    if errors:
+        for error in errors:
+            print(f"   ❌ {error}")
+    
+    # Testa conversão para LotStack
+    lot_stack_config = config.to_lot_stack_config()
+    print(f"\n📋 Configuração para LotStack:")
+    for key, value in lot_stack_config.items():
+        print(f"   {key}: {value}")

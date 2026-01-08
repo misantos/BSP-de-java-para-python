@@ -1,489 +1,472 @@
 """
-lot_stack.py - Gerenciador de subdivisão BSP (Binary Space Partitioning)
+lot_stack.py - Algoritmo BSP para subdivisão de lotes urbanos
 
-Este módulo implementa o algoritmo BSP para subdivisão recursiva de lotes.
-O BSP é uma técnica de particionamento espacial que divide recursivamente
-um espaço em regiões menores.
+VERSÃO REFATORADA:
+- Usa random nativo do Python (não mais JavaRandom)
+- Número de divisões calculado por MIN_WIDTH/MIN_HEIGHT (determinístico)
+- Direção de corte ainda aleatória (50%/50%)
+- Seed opcional
+- Lotes respeitam MIN_WIDTH e MIN_HEIGHT
 
-Fluxo do Algoritmo:
-1. Começa com um lote inicial (área total)
-2. Subdivide recursivamente em lotes menores
-3. Valida cada subdivisão (tamanho mínimo, acesso a ruas)
-4. Continua até atingir número mínimo de lotes
-
-Características:
-- Subdivisões podem ser horizontais ou verticais (escolha aleatória)
-- Cada subdivisão pode gerar N lotes (MIN_SPLIT a MAX_SPLIT)
-- Lotes com menor prioridade são subdivididos primeiro (maiores primeiro)
-- Validações garantem lotes utilizáveis (não muito pequenos, não cercados)
-
-Autor: Migração Python por Claude (Original Java: Erick Oliveira Rodrigues)
+Autor: Refatoração Python
+Data: 2026-01-07
 """
 
-from collections import deque
-from typing import Deque
+import random
 import math
-from lot import Lot, SpatialIndex
+from collections import deque
+from typing import List, Deque, Optional, Dict, Any
+
 from point import Point
-from java_random import JavaRandom
+from lot import Lot
+from spatial_index import SpatialIndex
 
 
 class LotStack:
     """
-    Gerencia a coleção de lotes e sua subdivisão recursiva usando BSP.
+    Gerencia a subdivisão de lotes usando BSP (Binary Space Partitioning).
     
-    Esta classe usa variáveis de classe (static) para manter estado global,
-    permitindo que Lot.has_an_exit_to_external_area() acesse a lista de lotes.
-    
-    Variáveis de Classe (equivalente a 'static' do Java):
-        lots: Lista de todos os lotes atuais
-        MIN_LOTS: Número mínimo de lotes desejados
-        random_gen: Gerador de números aleatórios (JavaRandom)
-        MIN/MAX_SPLIT_X/Y: Limites de subdivisões por eixo
-        MIN/MAX_HEIGHT/WIDTH_LOT: Limites de tamanho dos lotes
-        draw_callback: Função para desenhar progresso (opcional)
-        img: Imagem base para desenho (opcional)
-        spatial_index: Índice espacial para otimização O(n²) → O(k)
-    
-    Fluxo de Execução:
-        1. __init__: Configura variáveis e inicia subdivisão
-        2. partite_lot: Subdivide um lote em N lotes menores
-        3. Loop: Repete até atingir MIN_LOTS
-    
-    Examples:
-        >>> config = {'MIN_LOTS': 50, 'SEED': 333, ...}
-        >>> initial_lot = Lot(0, 0, 1000, 0, 1000, 1000, 0, 1000)
-        >>> lot_stack = LotStack(initial_lot, config)
-        >>> final_lots = lot_stack.get_lots()
+    Nova lógica de subdivisão:
+    - Direção: aleatória (50% horizontal, 50% vertical)
+    - Número de divisões: calculado para respeitar MIN_WIDTH/MIN_HEIGHT
+    - Limitado pelo MAX_SPLIT_X/MAX_SPLIT_Y
     """
     
-    # ===== Variáveis de Classe (Static) =====
-    # Equivalente a variáveis 'static' do Java
-    # Acessíveis globalmente como LotStack.lots, LotStack.MIN_LOTS, etc.
+    # Variáveis de classe (estado compartilhado)
+    lots: Deque[Lot] = deque()
+    spatial_index: Optional[SpatialIndex] = None
     
-    lots: Deque[Lot] = deque()  # Lista de todos os lotes (usa deque para performance)
-    MIN_LOTS: int = 0           # Número mínimo de lotes desejados
-    random_gen: JavaRandom = None  # Gerador aleatório (compatível com Java)
+    # Configurações
+    MIN_LOTS: int = 45
+    MIN_HEIGHT_LOT: float = 155.0
+    MIN_WIDTH_LOT: float = 125.0
+    MAX_HEIGHT_LOT: float = 1000.0
+    MAX_WIDTH_LOT: float = 1000.0
+    MIN_SPLIT_X: int = 1
+    MAX_SPLIT_X: int = 5
+    MIN_SPLIT_Y: int = 1
+    MAX_SPLIT_Y: int = 5
     
-    # Limites de subdivisões (quantas partes dividir em cada eixo)
-    MIN_SPLIT_X: int = 0  # Mínimo de subdivisões horizontais
-    MAX_SPLIT_X: int = 0  # Máximo de subdivisões horizontais
-    MIN_SPLIT_Y: int = 0  # Mínimo de subdivisões verticais
-    MAX_SPLIT_Y: int = 0  # Máximo de subdivisões verticais
+    # Gerador aleatório
+    _random: random.Random = None
     
-    # Limites de tamanho dos lotes (em pixels)
-    MIN_HEIGHT_LOT: int = 0  # Altura mínima de um lote
-    MIN_WIDTH_LOT: int = 0   # Largura mínima de um lote
-    MAX_HEIGHT_LOT: int = 0  # Altura máxima de um lote
-    MAX_WIDTH_LOT: int = 0   # Largura máxima de um lote
-    
-    # Callback para visualização de progresso (opcional)
-    draw_callback = None  # Função chamada a cada iteração para desenhar
-    img = None            # Imagem base para desenho
-
-    # ⚡ OTIMIZAÇÃO: Índice espacial para acelerar has_an_exit_to_external_area()
-    # Reduz complexidade de O(n) para O(k) onde k ≈ 5-10 lotes próximos
-    spatial_index: SpatialIndex = None
-    
-    def __init__(self, initial_lot: Lot, config: dict):
+    def __init__(self, initial_lot: Lot, config: Dict[str, Any]):
         """
-        Inicializa o LotStack e executa o algoritmo BSP.
-        
-        Este construtor:
-        1. Limpa lotes anteriores
-        2. Configura todas as variáveis de classe
-        3. Executa a subdivisão inicial
-        4. Loop até atingir MIN_LOTS
+        Inicializa o algoritmo BSP e executa a subdivisão.
         
         Args:
-            initial_lot (Lot): Lote inicial (área total a subdividir)
-            config (dict): Dicionário com configurações:
+            initial_lot: Lote inicial (área total)
+            config: Dicionário de configuração:
                 - MIN_LOTS: Número mínimo de lotes
-                - SEED: Semente para aleatoriedade
-                - MIN_SPLIT_X/Y: Mínimo de subdivisões por eixo
-                - MAX_SPLIT_X/Y: Máximo de subdivisões por eixo
-                - MIN_HEIGHT/WIDTH_LOT: Tamanho mínimo dos lotes
-                - MAX_HEIGHT/WIDTH_LOT: Tamanho máximo dos lotes
-                - draw_callback: Função para visualização (opcional)
-                - img: Imagem para desenho (opcional)
-        
-        Note:
-            O algoritmo para quando:
-            - Atinge MIN_LOTS, OU
-            - Não consegue mais subdividir (lotes muito pequenos/cercados)
-        
-        Examples:
-            >>> config = {
-            ...     'MIN_LOTS': 45,
-            ...     'SEED': 333,
-            ...     'MIN_SPLIT_X': 1, 'MAX_SPLIT_X': 5,
-            ...     'MIN_SPLIT_Y': 1, 'MAX_SPLIT_Y': 5,
-            ...     'MIN_HEIGHT_LOT': 155, 'MIN_WIDTH_LOT': 125,
-            ...     'MAX_HEIGHT_LOT': 1000, 'MAX_WIDTH_LOT': 1000
-            ... }
-            >>> lot_stack = LotStack(initial_lot, config)
+                - MIN_HEIGHT_LOT: Altura mínima do lote
+                - MIN_WIDTH_LOT: Largura mínima do lote
+                - MAX_HEIGHT_LOT: Altura máxima do lote
+                - MAX_WIDTH_LOT: Largura máxima do lote
+                - MIN_SPLIT_X: Mínimo de divisões horizontais
+                - MAX_SPLIT_X: Máximo de divisões horizontais
+                - MIN_SPLIT_Y: Mínimo de divisões verticais
+                - MAX_SPLIT_Y: Máximo de divisões verticais
+                - SEED: Seed para gerador aleatório (opcional)
         """
-        # Limpa lotes de execuções anteriores
+        # Limpa estado anterior
         LotStack.lots.clear()
         
-        # ===== Configura Variáveis de Classe =====
+        # Carrega configurações
+        LotStack.MIN_LOTS = config.get('MIN_LOTS', 45)
+        LotStack.MIN_HEIGHT_LOT = config.get('MIN_HEIGHT_LOT', 155.0)
+        LotStack.MIN_WIDTH_LOT = config.get('MIN_WIDTH_LOT', 125.0)
+        LotStack.MAX_HEIGHT_LOT = config.get('MAX_HEIGHT_LOT', 1000.0)
+        LotStack.MAX_WIDTH_LOT = config.get('MAX_WIDTH_LOT', 1000.0)
+        LotStack.MIN_SPLIT_X = config.get('MIN_SPLIT_X', 1)
+        LotStack.MAX_SPLIT_X = config.get('MAX_SPLIT_X', 5)
+        LotStack.MIN_SPLIT_Y = config.get('MIN_SPLIT_Y', 1)
+        LotStack.MAX_SPLIT_Y = config.get('MAX_SPLIT_Y', 5)
         
-        # Parâmetros principais
-        LotStack.MIN_LOTS = config['MIN_LOTS']
-        LotStack.random_gen = JavaRandom(config['SEED'])  # Usa JavaRandom para compatibilidade
+        # Configura gerador aleatório
+        seed = config.get('SEED', None)
+        if seed is not None:
+            LotStack._random = random.Random(seed)
+            print(f"🎲 Usando SEED: {seed}")
+        else:
+            LotStack._random = random.Random()
+            print("🎲 Usando seed aleatória")
         
-        # Limites de subdivisões
-        LotStack.MIN_SPLIT_X = config['MIN_SPLIT_X']
-        LotStack.MAX_SPLIT_X = config['MAX_SPLIT_X']
-        LotStack.MIN_SPLIT_Y = config['MIN_SPLIT_Y']
-        LotStack.MAX_SPLIT_Y = config['MAX_SPLIT_Y']
-        
-        # Limites de tamanho
-        LotStack.MIN_HEIGHT_LOT = config['MIN_HEIGHT_LOT']
-        LotStack.MIN_WIDTH_LOT = config['MIN_WIDTH_LOT']
-        LotStack.MAX_HEIGHT_LOT = config['MAX_HEIGHT_LOT']
-        LotStack.MAX_WIDTH_LOT = config['MAX_WIDTH_LOT']
-        
-        # Visualização (opcional)
-        LotStack.draw_callback = config.get('draw_callback')
-        LotStack.img = config.get('img')
-
-        # ⚡ OTIMIZAÇÃO: Inicializa índice espacial
-        # Cell size otimizado: 100px funciona bem para lotes típicos de 125-1000px
+        # Inicializa índice espacial
         LotStack.spatial_index = SpatialIndex(cell_size=100.0)
-
-        # ===== Inicia Subdivisão =====
-
-        # Adiciona lote inicial ao índice espacial
         LotStack.spatial_index.add_lot(initial_lot)
-
-        # Primeira subdivisão (lote inicial → primeiros lotes)
-        LotStack.partite_lot(initial_lot)
         
-        # ===== Loop Principal =====
-        # Continua subdividindo até atingir MIN_LOTS
-
-        # 🐛 FIX: Previne loops infinitos com limite de tentativas
-        max_attempts = LotStack.MIN_LOTS * 20  # Máximo de iterações (mais generoso)
+        print(f"📊 Configuração:")
+        print(f"   MIN_LOTS: {LotStack.MIN_LOTS}")
+        print(f"   MIN_WIDTH: {LotStack.MIN_WIDTH_LOT} px")
+        print(f"   MIN_HEIGHT: {LotStack.MIN_HEIGHT_LOT} px")
+        print(f"   MAX_SPLIT_X: {LotStack.MAX_SPLIT_X}")
+        print(f"   MAX_SPLIT_Y: {LotStack.MAX_SPLIT_Y}")
+        
+        # Executa primeira subdivisão
+        LotStack._partite_lot(initial_lot)
+        
+        # Loop principal
+        self._main_loop()
+    
+    def _main_loop(self) -> None:
+        """Loop principal de subdivisão."""
+        max_attempts = LotStack.MIN_LOTS * 20
         attempts = 0
-        last_lot_count = len(LotStack.lots)
-        stagnation_counter = 0  # Contador de iterações sem progresso
-        max_stagnation = 15  # Número de iterações sem progresso antes de desistir (mais tolerante)
-
+        stagnation_counter = 0
+        max_stagnation = 15
+        last_lot_count = 0
+        
         while len(LotStack.lots) < LotStack.MIN_LOTS:
-            # Mostra progresso no console
-            print(f"Total de lotes atual: {len(LotStack.lots)}")
-
-            # 🐛 FIX: Verifica limite de tentativas
+            current_count = len(LotStack.lots)
+            
+            # Debug
+            if current_count != last_lot_count:
+                print(f"   Lotes: {current_count}")
+            
+            # Verifica limite de tentativas
             attempts += 1
             if attempts >= max_attempts:
-                print(f"⚠️  AVISO: Limite de tentativas atingido ({max_attempts} iterações)")
-                print(f"    Conseguimos criar {len(LotStack.lots)} lotes de {LotStack.MIN_LOTS} desejados.")
-                print(f"    Sugestão: Reduza MIN_LOTS ou ajuste os parâmetros de tamanho/divisão.")
+                print(f"⚠️  Limite de tentativas atingido ({max_attempts})")
                 break
-
-            # 🐛 FIX: Detecta estagnação (sem progresso)
-            if len(LotStack.lots) == last_lot_count:
+            
+            # Detecta estagnação
+            if current_count == last_lot_count:
                 stagnation_counter += 1
                 if stagnation_counter >= max_stagnation:
-                    print(f"⚠️  AVISO: Subdivisão estagnada (sem progresso em {max_stagnation} iterações)")
-                    print(f"    Total atual: {len(LotStack.lots)} lotes de {LotStack.MIN_LOTS} desejados.")
-                    print(f"    Os lotes restantes não podem ser subdivididos (muito pequenos ou sem saída).")
+                    print(f"⚠️  Subdivisão estagnada (sem progresso em {max_stagnation} tentativas)")
                     break
             else:
-                stagnation_counter = 0  # Reset contador se houve progresso
-                last_lot_count = len(LotStack.lots)
+                stagnation_counter = 0
+                last_lot_count = current_count
             
-            # Encontra a prioridade mínima (lotes com menor prioridade = maiores)
-            # Integer.MAX_VALUE do Java = float('inf') do Python
-            min_priority = float('inf')
-
-            # 🐛 FIX: Desenha progresso apenas periodicamente (não em cada iteração)
-            # Mostra a cada 5 lotes novos para evitar spam de janelas
-            if LotStack.draw_callback and LotStack.img:
-                if len(LotStack.lots) % 5 == 0 or len(LotStack.lots) == 1:
-                    LotStack.draw_callback(list(LotStack.lots), LotStack.img.copy())
+            # Seleciona e subdivide lotes
+            self._select_and_subdivide()
+    
+    def _select_and_subdivide(self) -> None:
+        """Seleciona lotes para subdividir baseado em critérios."""
+        if not LotStack.lots:
+            return
+        
+        # Encontra menor prioridade (lotes mais "antigos"/maiores)
+        min_priority = min(lot.priority for lot in LotStack.lots)
+        
+        # Calcula área média
+        areas = [lot.get_area() for lot in LotStack.lots]
+        avg_area = sum(areas) / len(areas)
+        large_area_threshold = avg_area * 3.0
+        
+        # Seleciona lotes para subdividir (cópia para evitar modificação durante iteração)
+        for lot in list(LotStack.lots):
+            lot_area = lot.get_area()
             
-            # Calcula a menor prioridade entre todos os lotes
-            for lot in LotStack.lots:
-                if lot.priority < min_priority:
-                    min_priority = lot.priority
-
-            # 🐛 FIX: Calcula área média para identificar lotes desproporcionalmente grandes
-            if len(LotStack.lots) > 0:
-                areas = [lot.get_width() * lot.get_height() for lot in LotStack.lots]
-                avg_area = sum(areas) / len(areas)
-                # Lotes 3x maiores que a média devem ser subdivididos prioritariamente
-                large_area_threshold = avg_area * 3.0
-            else:
-                large_area_threshold = float('inf')
-
-            # ===== Seleciona Lotes para Subdividir =====
-            # Subdivide SE:
-            # - Prioridade == mínima (lotes maiores), OU
-            # - Tamanho >= máximo (lotes muito grandes), OU
-            # - 🐛 FIX: Área > 3x a média (lotes desproporcionalmente grandes)
-
-            # list() para evitar modificar durante iteração
-            for lot in list(LotStack.lots):
-                lot_area = lot.get_width() * lot.get_height()
-
-                # 🐛 FIX: Critérios de subdivisão mais agressivos
-                should_subdivide = (
-                    lot.priority <= min_priority or  # Menor prioridade (original)
-                    lot.get_width() >= LotStack.MAX_WIDTH_LOT or  # Largura máxima (original)
-                    lot.get_height() >= LotStack.MAX_HEIGHT_LOT or  # Altura máxima (original)
-                    lot_area > large_area_threshold  # 🐛 NOVO: Área desproporcional
-                )
-
-                if not should_subdivide:
-                    continue
-
-                # Tenta subdividir este lote
-                LotStack.partite_lot(lot)
+            # Critérios para subdividir
+            should_subdivide = (
+                lot.priority <= min_priority or
+                lot.get_width() >= LotStack.MAX_WIDTH_LOT or
+                lot.get_height() >= LotStack.MAX_HEIGHT_LOT or
+                lot_area > large_area_threshold
+            )
+            
+            if should_subdivide:
+                LotStack._partite_lot(lot)
+                
+                # Verifica se atingiu objetivo
+                if len(LotStack.lots) >= LotStack.MIN_LOTS:
+                    return
     
     @staticmethod
-    def partite_lot(lot_to_partition: Lot) -> None:
+    def _calculate_max_divisions(dimension: float, min_size: float, max_split: int) -> int:
         """
-        Subdivide um lote em múltiplos lotes menores (método estático).
+        Calcula o número máximo de divisões respeitando tamanho mínimo.
         
-        Algoritmo:
-        1. Escolhe direção: horizontal ou vertical (aleatório)
-        2. Escolhe número de subdivisões: MIN_SPLIT a MAX_SPLIT (aleatório)
-        3. Calcula coordenadas dos novos lotes
-        4. Valida tamanho e acesso a áreas externas
-        5. Se válido: remove pai, adiciona filhos
-        6. Se inválido: cancela subdivisão inteira
+        LÓGICA DETERMINÍSTICA:
+        - Calcula quantos lotes cabem respeitando MIN_WIDTH/MIN_HEIGHT
+        - Limita pelo MAX_SPLIT
         
         Args:
-            lot_to_partition (Lot): Lote a ser subdividido
-        
-        Note:
-            - Método estático (pode ser chamado sem instância)
-            - Para se já atingiu MIN_LOTS
-            - Rejeita subdivisão inteira se algum lote filho for inválido
-            - Usa Math.ceil para arredondar anchor_points
-        
-        Validações:
-            1. Tamanho: largura >= MIN_WIDTH e altura >= MIN_HEIGHT
-            2. Saída: lote deve ter acesso a área externa (não cercado)
-        
-        Examples:
-            >>> # Subdivide um lote retangular
-            >>> lote = Lot(0, 0, 500, 0, 500, 500, 0, 500)
-            >>> LotStack.partite_lot(lote)
-            >>> # lote foi substituído por 2-5 lotes menores
+            dimension: Largura ou altura do lote
+            min_size: Tamanho mínimo permitido (MIN_WIDTH ou MIN_HEIGHT)
+            max_split: Número máximo de divisões permitido
+            
+        Returns:
+            Número de divisões a fazer
         """
-        # ===== Condição de Parada =====
-        # Para se já atingiu o número mínimo de lotes
+        # Quantos lotes cabem respeitando o tamanho mínimo?
+        max_possible = int(dimension / min_size)
+        
+        # Garante pelo menos 1 divisão
+        max_possible = max(1, max_possible)
+        
+        # Limita pelo MAX_SPLIT
+        divisions = min(max_possible, max_split)
+        
+        return divisions
+    
+    @staticmethod
+    def _partite_lot(lot_to_partition: Lot) -> None:
+        """
+        Subdivide um lote em partes menores.
+        
+        LÓGICA:
+        1. Direção: aleatória (50% horizontal, 50% vertical)
+        2. Número de divisões: calculado por MIN_WIDTH/MIN_HEIGHT
+        3. Cria lotes por interpolação
+        4. Valida tamanho mínimo e saída
+        5. Se todos válidos: aceita subdivisão
+        """
+        # Para se já atingiu objetivo
         if len(LotStack.lots) >= LotStack.MIN_LOTS:
             return
         
-        # ===== Lista de Lotes Candidatos =====
-        # Lista temporária para armazenar os novos lotes
-        # Só será adicionada a LotStack.lots se TODOS forem válidos
+        # Lista temporária para novos lotes
         potential_lots = []
         
-        # ===== Escolhe Direção de Subdivisão =====
-        # nextBoolean() retorna True/False com 50% de chance cada
-        # True = horizontal (divide verticalmente)
-        # False = vertical (divide horizontalmente)
+        # Escolhe direção ALEATÓRIA (50%/50%)
+        is_horizontal = LotStack._random.random() < 0.5
         
-        if LotStack.random_gen.nextBoolean():  # ===== HORIZONTAL =====
-            """
-            Subdivisão Horizontal (cortes verticais):
+        if is_horizontal:
+            # ═══ SUBDIVISÃO HORIZONTAL (cortes verticais) ═══
+            # Divide ao longo do eixo X
             
-            Original:          Resultado (3 subdivisões):
-            +--------+         +--+--+--+
-            |        |         |  |  |  |
-            |        |   -->   |  |  |  |
-            |        |         |  |  |  |
-            +--------+         +--+--+--+
+            # Calcula número de divisões (DETERMINÍSTICO)
+            lot_width = lot_to_partition.get_width()
+            num_divisions = LotStack._calculate_max_divisions(
+                lot_width, 
+                LotStack.MIN_WIDTH_LOT,
+                LotStack.MAX_SPLIT_X
+            )
             
-            Calcula vetores das bordas direita e esquerda,
-            depois interpola para criar lotes intermediários.
-            """
+            if num_divisions < 1:
+                return
             
-            # Vetores das laterais direita e esquerda
-            # (de cima para baixo)
+            # Vetores para interpolação (esquerda → direita)
+            dx_top = lot_to_partition.top_right.x - lot_to_partition.top_left.x
+            dy_top = lot_to_partition.top_right.y - lot_to_partition.top_left.y
+            dx_bottom = lot_to_partition.bottom_right.x - lot_to_partition.bottom_left.x
+            dy_bottom = lot_to_partition.bottom_right.y - lot_to_partition.bottom_left.y
+            
+            # Cria lotes por interpolação
+            for k in range(1, num_divisions + 1):
+                t_start = (k - 1) / num_divisions
+                t_end = k / num_divisions
+                
+                new_lot = Lot(
+                    # Top left
+                    lot_to_partition.top_left.x + dx_top * t_start,
+                    lot_to_partition.top_left.y + dy_top * t_start,
+                    # Top right
+                    lot_to_partition.top_left.x + dx_top * t_end,
+                    lot_to_partition.top_left.y + dy_top * t_end,
+                    # Bottom right
+                    lot_to_partition.bottom_left.x + dx_bottom * t_end,
+                    lot_to_partition.bottom_left.y + dy_bottom * t_end,
+                    # Bottom left
+                    lot_to_partition.bottom_left.x + dx_bottom * t_start,
+                    lot_to_partition.bottom_left.y + dy_bottom * t_start
+                )
+                new_lot.priority = lot_to_partition.priority + 1
+                potential_lots.append(new_lot)
+        
+        else:
+            # ═══ SUBDIVISÃO VERTICAL (cortes horizontais) ═══
+            # Divide ao longo do eixo Y
+            
+            # Calcula número de divisões (DETERMINÍSTICO)
+            lot_height = lot_to_partition.get_height()
+            num_divisions = LotStack._calculate_max_divisions(
+                lot_height,
+                LotStack.MIN_HEIGHT_LOT,
+                LotStack.MAX_SPLIT_Y
+            )
+            
+            if num_divisions < 1:
+                return
+            
+            # Vetores para interpolação (topo → base)
+            dx_left = lot_to_partition.bottom_left.x - lot_to_partition.top_left.x
+            dy_left = lot_to_partition.bottom_left.y - lot_to_partition.top_left.y
             dx_right = lot_to_partition.bottom_right.x - lot_to_partition.top_right.x
             dy_right = lot_to_partition.bottom_right.y - lot_to_partition.top_right.y
             
-            dx_left = lot_to_partition.bottom_left.x - lot_to_partition.top_left.x
-            dy_left = lot_to_partition.bottom_left.y - lot_to_partition.top_left.y
-            
-            # Quantas subdivisões fazer (aleatório entre MIN e MAX)
-            # Math.ceil: arredonda para cima (garante pelo menos MIN_SPLIT)
-            # nextInt(n): retorna 0 até n-1
-            # 🐛 FIX: Previne divisão por zero quando MAX == MIN
-            split_range = int(LotStack.MAX_SPLIT_X - LotStack.MIN_SPLIT_X)
-            if split_range > 0:
-                anchor_points = int(math.ceil(
-                    LotStack.MIN_SPLIT_X +
-                    LotStack.random_gen.nextInt(split_range)
-                ))
-            else:
-                # Se MAX == MIN, usa MIN diretamente
-                anchor_points = LotStack.MIN_SPLIT_X
-
-            # 🐛 FIX: Garante pelo menos 1 subdivisão para evitar lotes vazios
-            if anchor_points < 1:
-                return  # Cancela subdivisão se não há divisões suficientes
-            
-            # Cria os novos lotes
-            # k varia de 1 até anchor_points (inclusive)
-            for k in range(1, anchor_points + 1):
-                # Pontos de início (topo do lote pai)
-                ini_left_x = lot_to_partition.top_left.x
-                ini_left_y = lot_to_partition.top_left.y
-                ini_right_x = lot_to_partition.top_right.x
-                ini_right_y = lot_to_partition.top_right.y
+            # Cria lotes por interpolação
+            for k in range(1, num_divisions + 1):
+                t_start = (k - 1) / num_divisions
+                t_end = k / num_divisions
                 
-                # Cria novo lote interpolando ao longo dos vetores
-                # (k-1)/anchor_points = início do lote
-                # k/anchor_points = fim do lote
                 new_lot = Lot(
                     # Top left
-                    ini_left_x + dx_left * (k - 1) / anchor_points,
-                    ini_left_y + dy_left * (k - 1) / anchor_points,
+                    lot_to_partition.top_left.x + dx_left * t_start,
+                    lot_to_partition.top_left.y + dy_left * t_start,
                     # Top right
-                    ini_right_x + dx_right * (k - 1) / anchor_points,
-                    ini_right_y + dy_right * (k - 1) / anchor_points,
+                    lot_to_partition.top_right.x + dx_right * t_start,
+                    lot_to_partition.top_right.y + dy_right * t_start,
                     # Bottom right
-                    ini_right_x + dx_right * k / anchor_points,
-                    ini_right_y + dy_right * k / anchor_points,
+                    lot_to_partition.top_right.x + dx_right * t_end,
+                    lot_to_partition.top_right.y + dy_right * t_end,
                     # Bottom left
-                    ini_left_x + dx_left * k / anchor_points,
-                    ini_left_y + dy_left * k / anchor_points
+                    lot_to_partition.top_left.x + dx_left * t_end,
+                    lot_to_partition.top_left.y + dy_left * t_end
                 )
-                
-                # Herda prioridade do pai + 1
-                # Prioridade aumenta a cada nível de subdivisão
                 new_lot.priority = lot_to_partition.priority + 1
                 potential_lots.append(new_lot)
         
-        else:  # ===== VERTICAL =====
-            """
-            Subdivisão Vertical (cortes horizontais):
-            
-            Original:          Resultado (3 subdivisões):
-            +--------+         +--------+
-            |        |         +--------+
-            |        |   -->   +--------+
-            |        |         +--------+
-            +--------+         +--------+
-            
-            Calcula vetores das bordas superior e inferior,
-            depois interpola para criar lotes intermediários.
-            """
-            
-            # Vetores das laterais superior e inferior
-            # (da esquerda para direita)
-            dx_top = lot_to_partition.top_right.x - lot_to_partition.top_left.x
-            dy_top = lot_to_partition.top_right.y - lot_to_partition.top_left.y
-            
-            dx_bottom = lot_to_partition.bottom_right.x - lot_to_partition.bottom_left.x
-            dy_bottom = lot_to_partition.bottom_right.y - lot_to_partition.bottom_left.y
-
-            # Quantas subdivisões fazer
-            # 🐛 FIX: Previne divisão por zero quando MAX == MIN
-            split_range = int(LotStack.MAX_SPLIT_Y - LotStack.MIN_SPLIT_Y)
-            if split_range > 0:
-                anchor_points = int(math.ceil(
-                    LotStack.MIN_SPLIT_Y +
-                    LotStack.random_gen.nextInt(split_range)
-                ))
-            else:
-                # Se MAX == MIN, usa MIN diretamente
-                anchor_points = LotStack.MIN_SPLIT_Y
-
-            # 🐛 FIX: Garante pelo menos 1 subdivisão para evitar lotes vazios
-            if anchor_points < 1:
-                return  # Cancela subdivisão se não há divisões suficientes
-            
-            # Cria os novos lotes
-            for k in range(1, anchor_points + 1):
-                # Pontos de início (esquerda do lote pai)
-                ini_top_left_x = lot_to_partition.top_left.x
-                ini_top_left_y = lot_to_partition.top_left.y
-                ini_bottom_left_x = lot_to_partition.bottom_left.x
-                ini_bottom_left_y = lot_to_partition.bottom_left.y
-                
-                # Cria novo lote interpolando
-                new_lot = Lot(
-                    # Top left
-                    ini_top_left_x + dx_top * (k - 1) / anchor_points,
-                    ini_top_left_y + dy_top * (k - 1) / anchor_points,
-                    # Top right
-                    ini_top_left_x + dx_top * k / anchor_points,
-                    ini_top_left_y + dy_top * k / anchor_points,
-                    # Bottom right
-                    ini_bottom_left_x + dx_bottom * k / anchor_points,
-                    ini_bottom_left_y + dy_bottom * k / anchor_points,
-                    # Bottom left
-                    ini_bottom_left_x + dx_bottom * (k - 1) / anchor_points,
-                    ini_bottom_left_y + dy_bottom * (k - 1) / anchor_points
-                )
-                
-                new_lot.priority = lot_to_partition.priority + 1
-                potential_lots.append(new_lot)
-        
-        # ===== Validação dos Lotes Candidatos =====
-        # TODOS os lotes devem passar nas validações
-        # Se algum falhar, a subdivisão inteira é cancelada
-        
+        # ═══ VALIDAÇÃO DOS LOTES ═══
         for lot in potential_lots:
-            # ===== Validação 1: Tamanho Mínimo =====
-            # Lote deve ter largura >= MIN_WIDTH e altura >= MIN_HEIGHT
-            if (lot.get_height() < LotStack.MIN_HEIGHT_LOT or 
-                lot.get_width() < LotStack.MIN_WIDTH_LOT):
-                # Lote muito pequeno → cancela subdivisão
+            # Validação 1: Tamanho mínimo
+            if lot.get_width() < LotStack.MIN_WIDTH_LOT:
+                # Lote muito estreito → CANCELA SUBDIVISÃO
                 return
             
-            # ===== Validação 2: Acesso a Área Externa (COM SPATIAL INDEX) =====
-            # Lote deve ter pelo menos uma saída livre (não cercado)
-            # Garante que lote tem acesso a ruas/áreas externas
-            # ⚡ OTIMIZADO: Passa spatial_index para busca O(k) ao invés de O(n)
+            if lot.get_height() < LotStack.MIN_HEIGHT_LOT:
+                # Lote muito baixo → CANCELA SUBDIVISÃO
+                return
+            
+            # Validação 2: Saída para área externa
             if not lot.has_an_exit_to_external_area(LotStack.spatial_index):
-                # Lote sem saída → cancela subdivisão
+                # Lote cercado → CANCELA SUBDIVISÃO
                 return
         
-        # ===== Subdivisão Aceita! =====
-        # Todos os lotes passaram nas validações
-
-        # ⚡ OTIMIZAÇÃO: Atualiza spatial index
-        # Remove o lote pai do índice espacial
+        # ═══ SUBDIVISÃO ACEITA ═══
+        
+        # Remove lote pai do índice espacial
         if LotStack.spatial_index:
             LotStack.spatial_index.remove_lot(lot_to_partition)
-
-        # Remove o lote pai da lista
+        
+        # Remove lote pai da lista
         try:
             LotStack.lots.remove(lot_to_partition)
         except ValueError:
-            # Lote pode já ter sido removido (não é erro)
-            pass
-
-        # Adiciona todos os lotes filhos à lista
+            pass  # Já foi removido (primeira subdivisão)
+        
+        # Adiciona lotes filhos
         LotStack.lots.extend(potential_lots)
-
-        # ⚡ OTIMIZAÇÃO: Adiciona novos lotes ao spatial index
+        
+        # Adiciona filhos ao índice espacial
         if LotStack.spatial_index:
             for lot in potential_lots:
                 LotStack.spatial_index.add_lot(lot)
     
-    def get_lots(self) -> list[Lot]:
-        """
-        Retorna a lista de todos os lotes finais.
-        
-        Returns:
-            list[Lot]: Lista com todos os lotes após subdivisão
-        
-        Note:
-            Retorna uma cópia da lista (não a deque original)
-        
-        Examples:
-            >>> lot_stack = LotStack(initial_lot, config)
-            >>> lotes_finais = lot_stack.get_lots()
-            >>> print(f"Total: {len(lotes_finais)} lotes")
-        """
+    def get_lots(self) -> List[Lot]:
+        """Retorna lista de todos os lotes."""
         return list(LotStack.lots)
+    
+    @classmethod
+    def get_statistics(cls) -> Dict[str, Any]:
+        """Retorna estatísticas dos lotes."""
+        if not cls.lots:
+            return {}
+        
+        heights = [lot.get_height() for lot in cls.lots]
+        widths = [lot.get_width() for lot in cls.lots]
+        areas = [lot.get_area() for lot in cls.lots]
+        
+        return {
+            'count': len(cls.lots),
+            'height': {
+                'min': min(heights),
+                'max': max(heights),
+                'avg': sum(heights) / len(heights)
+            },
+            'width': {
+                'min': min(widths),
+                'max': max(widths),
+                'avg': sum(widths) / len(widths)
+            },
+            'area': {
+                'min': min(areas),
+                'max': max(areas),
+                'avg': sum(areas) / len(areas),
+                'total': sum(areas)
+            }
+        }
+    
+    @classmethod
+    def print_statistics(cls) -> None:
+        """Imprime estatísticas dos lotes."""
+        stats = cls.get_statistics()
+        
+        if not stats:
+            print("⚠️  Nenhum lote para calcular estatísticas")
+            return
+        
+        print(f"\n📊 Estatísticas ({stats['count']} lotes)")
+        print("=" * 50)
+        
+        print(f"\n📏 Altura:")
+        print(f"   Mínima: {stats['height']['min']:.1f} px")
+        print(f"   Máxima: {stats['height']['max']:.1f} px")
+        print(f"   Média:  {stats['height']['avg']:.1f} px")
+        
+        print(f"\n📐 Largura:")
+        print(f"   Mínima: {stats['width']['min']:.1f} px")
+        print(f"   Máxima: {stats['width']['max']:.1f} px")
+        print(f"   Média:  {stats['width']['avg']:.1f} px")
+        
+        print(f"\n📦 Área:")
+        print(f"   Mínima: {stats['area']['min']:.1f} px²")
+        print(f"   Máxima: {stats['area']['max']:.1f} px²")
+        print(f"   Média:  {stats['area']['avg']:.1f} px²")
+        print(f"   Total:  {stats['area']['total']:.1f} px²")
+        
+        print("=" * 50)
+
+
+# Teste do módulo
+if __name__ == "__main__":
+    print("🧪 Testando LotStack refatorado")
+    print("=" * 50)
+    
+    # Cria lote inicial
+    initial_lot = Lot(
+        100, 200,    # Top left
+        600, 200,    # Top right
+        650, 1200,   # Bottom right
+        150, 1100    # Bottom left
+    )
+    
+    print(f"\n📍 Lote inicial:")
+    print(f"   Largura: {initial_lot.get_width():.1f} px")
+    print(f"   Altura: {initial_lot.get_height():.1f} px")
+    print(f"   Área: {initial_lot.get_area():.1f} px²")
+    
+    # Configuração
+    config = {
+        'MIN_LOTS': 20,
+        'MIN_HEIGHT_LOT': 155,
+        'MIN_WIDTH_LOT': 125,
+        'MAX_HEIGHT_LOT': 500,
+        'MAX_WIDTH_LOT': 500,
+        'MIN_SPLIT_X': 1,
+        'MAX_SPLIT_X': 4,
+        'MIN_SPLIT_Y': 1,
+        'MAX_SPLIT_Y': 4,
+        'SEED': 42  # Seed opcional
+    }
+    
+    print(f"\n🚀 Iniciando subdivisão (MIN_LOTS={config['MIN_LOTS']})...")
+    print()
+    
+    # Executa BSP
+    lot_stack = LotStack(initial_lot, config)
+    
+    # Resultado
+    lots = lot_stack.get_lots()
+    
+    print(f"\n✅ Subdivisão concluída!")
+    print(f"📦 Total de lotes: {len(lots)}")
+    
+    # Estatísticas
+    LotStack.print_statistics()
+    
+    # Verifica se todos respeitam MIN_WIDTH e MIN_HEIGHT
+    all_valid = True
+    for i, lot in enumerate(lots):
+        if lot.get_width() < config['MIN_WIDTH_LOT']:
+            print(f"❌ Lote {i+1}: largura {lot.get_width():.1f} < {config['MIN_WIDTH_LOT']}")
+            all_valid = False
+        if lot.get_height() < config['MIN_HEIGHT_LOT']:
+            print(f"❌ Lote {i+1}: altura {lot.get_height():.1f} < {config['MIN_HEIGHT_LOT']}")
+            all_valid = False
+    
+    if all_valid:
+        print(f"\n✅ Todos os lotes respeitam MIN_WIDTH ({config['MIN_WIDTH_LOT']}px) e MIN_HEIGHT ({config['MIN_HEIGHT_LOT']}px)")
